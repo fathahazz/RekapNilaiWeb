@@ -104,16 +104,10 @@
   .cardsgrid { display: grid; grid-template-columns: 1fr; gap: 14px; }
   .card { position: relative; background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px 14px; box-shadow: 0 1px 2px rgba(30,42,56,.05); }
   .card-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; margin-bottom: 2px; }
-  .card-top-right { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
   .card-title {
     font-family: var(--serif); font-size: 16px; font-weight: 600; border: none; outline: none;
     flex: 1; min-width: 0; color: var(--ink); background: transparent; margin-bottom: 2px;
   }
-  .stamp {
-    width: 30px; height: 30px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
-    transform: rotate(-8deg); box-shadow: 0 1px 3px rgba(0,0,0,.15); flex-shrink: 0;
-  }
-  .stamp span { font-family: var(--serif); font-weight: 600; font-size: 12.5px; color: #fff; }
   .card-del { background: none; border: none; color: var(--muted); cursor: pointer; padding: 10px; margin: -10px -6px -10px 0; flex-shrink: 0; }
   .sksrow { display: flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 11px; color: var(--muted); margin-bottom: 12px; }
   .sksrow input { width: 44px; font-family: var(--mono); font-size: 14px; border: 1px solid var(--line); border-radius: 4px; padding: 4px 6px; color: var(--ink); }
@@ -220,20 +214,11 @@ function persist() {
 }
 function activeSem() { return data.semesters.find(s => s.id === activeSemId) || data.semesters[0]; }
 
-/* ---------------- render ---------------- */
+/* ---------------- render (structural — only called on add/delete/switch) ---------------- */
 const app = document.getElementById("app");
 
 function render() {
-  const allSubjects = data.semesters.flatMap(s => s.subjects);
-  const totalSks = allSubjects.reduce((a,s)=>a+(Number(s.sks)||0),0);
-  const totalPoints = allSubjects.reduce((a,s)=>a+getGrade(finalScore(s)).point*(Number(s.sks)||0),0);
-  const ipk = totalSks > 0 ? totalPoints/totalSks : 0;
   const sem = activeSem();
-
-  const distribution = SCALE.map(s => ({
-    letter: s.letter,
-    count: allSubjects.filter(sub => getGrade(finalScore(sub)).letter === s.letter).length
-  })).filter(d => d.count > 0);
 
   app.innerHTML = `
     <div class="page">
@@ -243,46 +228,33 @@ function render() {
           <h1 class="title">Rekap Nilai</h1>
         </div>
         <div class="statrow">
-          <div class="stat"><div class="val big">${ipk.toFixed(2)}</div><div class="lbl">IPK Kumulatif</div></div>
-          <div class="stat"><div class="val">${totalSks}</div><div class="lbl">Total SKS</div></div>
-          <div class="stat"><div class="val">${allSubjects.length}</div><div class="lbl">Mata Kuliah</div></div>
+          <div class="stat"><div class="val big" id="statIpk">0.00</div><div class="lbl">IPK Kumulatif</div></div>
+          <div class="stat"><div class="val" id="statSks">0</div><div class="lbl">Total SKS</div></div>
+          <div class="stat"><div class="val" id="statCount">0</div><div class="lbl">Mata Kuliah</div></div>
         </div>
       </header>
 
       <div class="body">
         <aside class="sidebar">
           <div class="semscroll" id="semscroll"></div>
-          ${distribution.length ? `
-          <details class="dist">
+          <details class="dist" id="distWrap" style="display:none">
             <summary>&#127891; Sebaran Nilai</summary>
             <div class="donut-wrap">
-              <div class="donut" style="background: conic-gradient(${donutGradient(distribution, allSubjects.length)})"></div>
-              <div class="legend">${distribution.map(d => `<div><span class="dot" style="background:${tierColor(d.letter)}"></span>${d.letter} &middot; ${d.count}</div>`).join("")}</div>
+              <div class="donut" id="donut"></div>
+              <div class="legend" id="legend"></div>
             </div>
-          </details>` : ""}
+          </details>
         </aside>
 
         <main class="main">
-          ${sem.subjects.length ? `
-          <div class="chartcard">
-            <div class="title">Nilai Akhir &mdash; ${escapeHtml(sem.name)}</div>
-            <div class="barchart">
-              ${sem.subjects.map(s => {
-                const n = finalScore(s);
-                const color = tierColor(getGrade(n).letter);
-                const h = Math.max(4, (n/100)*110);
-                return `<div class="bar-col">
-                  <div class="bar-val">${n.toFixed(0)}</div>
-                  <div class="bar" style="height:${h}px;background:${color}"></div>
-                  <div class="bar-label">${escapeHtml(s.name)}</div>
-                </div>`;
-              }).join("")}
-            </div>
-          </div>` : ""}
+          <div class="chartcard" id="chartcard" style="display:none">
+            <div class="title" id="chartTitle"></div>
+            <div class="barchart" id="barchart"></div>
+          </div>
 
           <div class="cardsgrid" id="cardsgrid"></div>
 
-          ${data.semesters.length > 1 ? `<button class="delsem" id="delsem">&#128465; Hapus ${escapeHtml(sem.name)}</button>` : ""}
+          <button class="delsem" id="delsem" style="display:none">&#128465; <span id="delsemLabel"></span></button>
         </main>
       </div>
     </div>
@@ -290,34 +262,28 @@ function render() {
 
   renderSemScroll();
   renderCards();
+  renderChartCard();
+  updateHeaderStats();
 
-  document.getElementById("delsem")?.addEventListener("click", () => {
+  document.getElementById("delsem").addEventListener("click", () => {
     if (data.semesters.length <= 1) return;
-    data.semesters = data.semesters.filter(s => s.id !== sem.id);
+    const s = activeSem();
+    data.semesters = data.semesters.filter(x => x.id !== s.id);
     activeSemId = data.semesters[0].id;
-    persist(); render();
+    render();
   });
-}
-
-function donutGradient(distribution, total) {
-  let acc = 0; const parts = [];
-  distribution.forEach(d => {
-    const start = (acc/total)*360; acc += d.count;
-    const end = (acc/total)*360;
-    parts.push(`${tierColor(d.letter)} ${start}deg ${end}deg`);
-  });
-  return parts.join(", ");
 }
 
 function escapeHtml(str) {
   return String(str).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 }
 
+/* ---------------- sidebar: semester tabs ---------------- */
 function renderSemScroll() {
   const wrap = document.getElementById("semscroll");
   wrap.innerHTML = data.semesters.map(s => `
     <div class="semitem ${s.id === activeSemId ? "active" : ""}" data-sem="${s.id}">
-      <input value="${escapeHtml(s.name)}" data-rename="${s.id}" />
+      <input value="${escapeHtml(s.name)}" data-rename="${s.id}" autocomplete="off" enterkeyhint="done" />
       <span class="count">${s.subjects.length}</span>
     </div>
   `).join("") + `<button class="addsem" id="addsem">&#43; Semester</button>`;
@@ -335,16 +301,76 @@ function renderSemScroll() {
       const s = data.semesters.find(x => x.id === inp.dataset.rename);
       s.name = e.target.value;
       persist();
+      renderChartCard();
+      const label = document.getElementById("delsemLabel");
+      if (label && s.id === activeSemId) label.textContent = `Hapus ${s.name}`;
     });
   });
   document.getElementById("addsem").addEventListener("click", () => {
     const sNew = defaultSemester(`Semester ${data.semesters.length + 1}`);
     data.semesters.push(sNew);
     activeSemId = sNew.id;
-    persist(); render();
+    render();
   });
+
+  const delBtn = document.getElementById("delsem");
+  if (delBtn) {
+    if (data.semesters.length > 1) {
+      delBtn.style.display = "flex";
+      document.getElementById("delsemLabel").textContent = `Hapus ${activeSem().name}`;
+    } else {
+      delBtn.style.display = "none";
+    }
+  }
+
+  renderDistribution();
 }
 
+/* ---------------- sidebar: distribution donut ---------------- */
+function renderDistribution() {
+  const allSubjects = data.semesters.flatMap(s => s.subjects);
+  const distribution = SCALE.map(s => ({
+    letter: s.letter,
+    count: allSubjects.filter(sub => getGrade(finalScore(sub)).letter === s.letter).length
+  })).filter(d => d.count > 0);
+
+  const distWrap = document.getElementById("distWrap");
+  if (!distribution.length) { distWrap.style.display = "none"; return; }
+  distWrap.style.display = "";
+
+  let acc = 0; const total = allSubjects.length; const parts = [];
+  distribution.forEach(d => {
+    const start = (acc/total)*360; acc += d.count;
+    const end = (acc/total)*360;
+    parts.push(`${tierColor(d.letter)} ${start}deg ${end}deg`);
+  });
+  document.getElementById("donut").style.background = `conic-gradient(${parts.join(", ")})`;
+  document.getElementById("legend").innerHTML = distribution.map(d =>
+    `<div><span class="dot" style="background:${tierColor(d.letter)}"></span>${d.letter} &middot; ${d.count}</div>`
+  ).join("");
+}
+
+/* ---------------- main: bar chart (no inputs — safe to fully replace) ---------------- */
+function renderChartCard() {
+  const sem = activeSem();
+  const container = document.getElementById("chartcard");
+  if (!container) return;
+  if (!sem.subjects.length) { container.style.display = "none"; return; }
+  container.style.display = "";
+  document.getElementById("chartTitle").textContent = `Nilai Akhir — ${sem.name}`;
+  document.getElementById("barchart").innerHTML = sem.subjects.map(s => {
+    const n = finalScore(s);
+    const color = tierColor(getGrade(n).letter);
+    const h = Math.max(4, (n/100)*110);
+    return `<div class="bar-col">
+      <div class="bar-val">${n.toFixed(0)}</div>
+      <div class="bar" style="height:${h}px;background:${color}"></div>
+      <div class="bar-label">${escapeHtml(s.name)}</div>
+    </div>`;
+  }).join("");
+}
+
+/* ---------------- main: subject cards (structural rebuild — only on add/delete) ---------------- */
 function renderCards() {
   const grid = document.getElementById("cardsgrid");
   const sem = activeSem();
@@ -355,25 +381,25 @@ function renderCards() {
 
   document.getElementById("addcard").addEventListener("click", () => {
     sem.subjects.push(defaultSubject());
-    persist(); renderCards(); updateHeaderStats(); renderChart();
+    persist();
+    renderCards();
+    renderChartCard();
+    updateHeaderStats();
+    renderSemScroll();
   });
 }
 
 function cardHtml(sub) {
   const n = finalScore(sub);
-  const g = getGrade(n);
   const wsum = WEIGHT_KEYS.reduce((a,k)=>a+(Number(sub.weights[k])||0),0);
   const weightOk = wsum === 100;
   return `
     <div class="card" data-card="${sub.id}">
       <div class="card-top">
-        <input class="card-title" value="${escapeHtml(sub.name)}" data-field="name" />
-        <div class="card-top-right">
-          <div class="stamp" data-stamp style="background:${tierColor(g.letter)}"><span data-stamp-letter>${g.letter}</span></div>
-          <button class="card-del" data-del title="Hapus">&#128465;</button>
-        </div>
+        <input class="card-title" value="${escapeHtml(sub.name)}" data-field="name" autocomplete="off" enterkeyhint="done" />
+        <button class="card-del" data-del title="Hapus">&#128465;</button>
       </div>
-      <label class="sksrow">SKS <input type="number" min="0" max="24" value="${sub.sks}" data-field="sks" /></label>
+      <label class="sksrow">SKS <input type="number" inputmode="numeric" min="0" max="24" value="${sub.sks}" data-field="sks" autocomplete="off" enterkeyhint="done" /></label>
 
       <div class="sectionlbl">BOBOT</div>
       ${WEIGHT_KEYS.map(k => ledgerRowHtml(WEIGHT_LABELS[k], sub.weights[k], "weight", k, "%")).join("")}
@@ -396,22 +422,27 @@ function ledgerRowHtml(label, value, group, key, suffix) {
     <div class="ledgerrow">
       <span class="lbl">${label}</span>
       <span class="dots"></span>
-      <input type="number" min="0" max="100" value="${value}" data-group="${group}" data-key="${key}" />
+      <input type="number" inputmode="decimal" min="0" max="100" value="${value}" data-group="${group}" data-key="${key}" autocomplete="off" enterkeyhint="done" />
       ${suffix ? `<span class="suffix">${suffix}</span>` : ""}
     </div>
   `;
 }
 
+/* ---------------- wiring: every handler here does TARGETED updates only,
+   never rebuilds the cardsgrid — this is what keeps the on-screen keyboard open ---------------- */
 function wireCard(sub) {
   const card = document.querySelector(`[data-card="${sub.id}"]`);
   if (!card) return;
 
   card.querySelector('[data-field="name"]').addEventListener("input", e => {
-    sub.name = e.target.value; persist(); renderChart();
+    sub.name = e.target.value;
+    persist();
+    renderChartCard();
   });
   card.querySelector('[data-field="sks"]').addEventListener("input", e => {
     sub.sks = e.target.value === "" ? "" : Number(e.target.value);
-    persist(); updateHeaderStats();
+    persist();
+    updateHeaderStats();
   });
   card.querySelectorAll("[data-group]").forEach(inp => {
     inp.addEventListener("input", e => {
@@ -421,26 +452,26 @@ function wireCard(sub) {
       persist();
       updateCardComputed(sub, card);
       updateHeaderStats();
-      renderChart();
+      renderChartCard();
     });
   });
   card.querySelector("[data-del]").addEventListener("click", () => {
     const sem = activeSem();
     sem.subjects = sem.subjects.filter(s => s.id !== sub.id);
-    persist(); renderCards(); updateHeaderStats(); renderChart(); renderSemScroll();
+    persist();
+    renderCards();
+    renderChartCard();
+    updateHeaderStats();
+    renderSemScroll();
   });
 }
 
 function updateCardComputed(sub, card) {
   const n = finalScore(sub);
-  const g = getGrade(n);
   const wsum = WEIGHT_KEYS.reduce((a,k)=>a+(Number(sub.weights[k])||0),0);
   const weightOk = wsum === 100;
 
   card.querySelector("[data-finalvalue]").textContent = n.toFixed(1);
-  const stamp = card.querySelector("[data-stamp]");
-  stamp.style.background = tierColor(g.letter);
-  card.querySelector("[data-stamp-letter]").textContent = g.letter;
   const ws = card.querySelector("[data-weightsum]");
   ws.style.color = weightOk ? "#6E8B74" : "#A6483C";
   ws.innerHTML = weightOk ? "total bobot 100%" : `&#9888; total bobot ${wsum}% (harus 100%)`;
@@ -451,34 +482,18 @@ function updateHeaderStats() {
   const totalSks = allSubjects.reduce((a,s)=>a+(Number(s.sks)||0),0);
   const totalPoints = allSubjects.reduce((a,s)=>a+getGrade(finalScore(s)).point*(Number(s.sks)||0),0);
   const ipk = totalSks > 0 ? totalPoints/totalSks : 0;
-  const vals = document.querySelectorAll(".statrow .stat .val");
-  if (vals[0]) vals[0].textContent = ipk.toFixed(2);
-  if (vals[1]) vals[1].textContent = totalSks;
-  if (vals[2]) vals[2].textContent = allSubjects.length;
-  // also refresh sem chip subject counts + distribution donut on next full render trigger points
+
+  document.getElementById("statIpk").textContent = ipk.toFixed(2);
+  document.getElementById("statSks").textContent = totalSks;
+  document.getElementById("statCount").textContent = allSubjects.length;
+
   document.querySelectorAll(".semitem .count").forEach(el => {
     const semId = el.closest(".semitem").dataset.sem;
     const s = data.semesters.find(x => x.id === semId);
     if (s) el.textContent = s.subjects.length;
   });
-}
 
-function renderChart() {
-  const sem = activeSem();
-  const cc = document.querySelector(".chartcard .barchart");
-  const wrap = document.querySelector(".chartcard");
-  if (!sem.subjects.length) { if (wrap) wrap.remove(); return; }
-  if (!cc) { renderCards(); return; } // chart card missing entirely (first subject just added) -> handled by renderCards flow already, safe fallback
-  cc.innerHTML = sem.subjects.map(s => {
-    const n = finalScore(s);
-    const color = tierColor(getGrade(n).letter);
-    const h = Math.max(4, (n/100)*110);
-    return `<div class="bar-col">
-      <div class="bar-val">${n.toFixed(0)}</div>
-      <div class="bar" style="height:${h}px;background:${color}"></div>
-      <div class="bar-label">${escapeHtml(s.name)}</div>
-    </div>`;
-  }).join("");
+  renderDistribution();
 }
 
 render();
